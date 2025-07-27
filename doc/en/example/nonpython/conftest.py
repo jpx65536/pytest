@@ -1,4 +1,6 @@
 # content of conftest.py
+from __future__ import annotations
+
 import pytest
 
 
@@ -12,7 +14,7 @@ class YamlFile(pytest.File):
         # We need a yaml parser, e.g. PyYAML.
         import yaml
 
-        raw = yaml.safe_load(self.path.open())
+        raw = yaml.safe_load(self.path.open(encoding="utf-8"))
         for name, spec in sorted(raw.items()):
             yield YamlItem.from_parent(self, name=name, spec=spec)
 
@@ -38,6 +40,7 @@ class YamlItem(pytest.Item):
                     "   no further details known at this point.",
                 ]
             )
+        return super().repr_failure(excinfo)
 
     def reportinfo(self):
         return self.path, 0, f"usecase: {self.name}"

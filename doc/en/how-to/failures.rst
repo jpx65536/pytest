@@ -112,7 +112,7 @@ on the command-line.
 
 Also the :confval:`faulthandler_timeout=X<faulthandler_timeout>` configuration option can be used
 to dump the traceback of all threads if a test takes longer than ``X``
-seconds to finish (not available on Windows).
+seconds to finish.
 
 .. note::
 
@@ -134,10 +134,6 @@ Warning about unraisable exceptions and unhandled thread exceptions
 -------------------------------------------------------------------
 
 .. versionadded:: 6.2
-
-.. note::
-
-    These features only work on Python>=3.8.
 
 Unhandled exceptions are exceptions that are raised in a situation in which
 they cannot propagate to a caller. The most common case is an exception raised

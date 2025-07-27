@@ -147,14 +147,16 @@ The test collection would look like this:
 
     $ pytest --collect-only
     =========================== test session starts ============================
-    platform linux -- Python 3.x.y, pytest-7.x.y, pluggy-1.x.y
-    rootdir: /home/sweet/project, configfile: pytest.ini
+    platform linux -- Python 3.x.y, pytest-8.x.y, pluggy-1.x.y
+    rootdir: /home/sweet/project
+    configfile: pytest.ini
     collected 2 items
 
-    <Module check_myapp.py>
-      <Class CheckMyApp>
-        <Function simple_check>
-        <Function complex_check>
+    <Dir pythoncollection.rst-209>
+      <Module check_myapp.py>
+        <Class CheckMyApp>
+          <Function simple_check>
+          <Function complex_check>
 
     ======================== 2 tests collected in 0.12s ========================
 
@@ -208,15 +210,18 @@ You can always peek at the collection tree without running tests like this:
 
     . $ pytest --collect-only pythoncollection.py
     =========================== test session starts ============================
-    platform linux -- Python 3.x.y, pytest-7.x.y, pluggy-1.x.y
-    rootdir: /home/sweet/project, configfile: pytest.ini
+    platform linux -- Python 3.x.y, pytest-8.x.y, pluggy-1.x.y
+    rootdir: /home/sweet/project
+    configfile: pytest.ini
     collected 3 items
 
-    <Module CWD/pythoncollection.py>
-      <Function test_function>
-      <Class TestClass>
-        <Function test_method>
-        <Function test_anothermethod>
+    <Dir pythoncollection.rst-209>
+      <Dir CWD>
+        <Module pythoncollection.py>
+          <Function test_function>
+          <Class TestClass>
+            <Function test_method>
+            <Function test_anothermethod>
 
     ======================== 3 tests collected in 0.12s ========================
 
@@ -289,8 +294,9 @@ file will be left out:
 
     $ pytest --collect-only
     =========================== test session starts ============================
-    platform linux -- Python 3.x.y, pytest-7.x.y, pluggy-1.x.y
-    rootdir: /home/sweet/project, configfile: pytest.ini
+    platform linux -- Python 3.x.y, pytest-8.x.y, pluggy-1.x.y
+    rootdir: /home/sweet/project
+    configfile: pytest.ini
     collected 0 items
 
     ======================= no tests collected in 0.12s ========================
@@ -319,3 +325,30 @@ with ``Test`` by setting a boolean ``__test__`` attribute to ``False``.
     # Will not be discovered as a test
     class TestClass:
         __test__ = False
+
+.. note::
+
+   If you are working with abstract test classes and want to avoid manually setting
+   the ``__test__`` attribute for subclasses, you can use a mixin class to handle
+   this automatically. For example:
+
+   .. code-block:: python
+
+       # Mixin to handle abstract test classes
+       class NotATest:
+           def __init_subclass__(cls):
+               cls.__test__ = NotATest not in cls.__bases__
+
+
+       # Abstract test class
+       class AbstractTest(NotATest):
+           pass
+
+
+       # Subclass that will be collected as a test
+       class RealTest(AbstractTest):
+           def test_example(self):
+               assert 1 + 1 == 2
+
+   This approach ensures that subclasses of abstract test classes are automatically
+   collected without needing to explicitly set the ``__test__`` attribute.

@@ -133,14 +133,16 @@ Releasing
 
 Both automatic and manual processes described above follow the same steps from this point onward.
 
-#. After all tests pass and the PR has been approved, tag the release commit
-   in the ``release-MAJOR.MINOR.PATCH`` branch and push it. This will publish to PyPI::
+#. After all tests pass and the PR has been approved, trigger the ``deploy`` job
+   in https://github.com/pytest-dev/pytest/actions/workflows/deploy.yml, using the ``release-MAJOR.MINOR.PATCH`` branch
+   as source.
 
-     git fetch upstream
-     git tag MAJOR.MINOR.PATCH upstream/release-MAJOR.MINOR.PATCH
-     git push upstream MAJOR.MINOR.PATCH
+   Using the command-line::
 
-   Wait for the deploy to complete, then make sure it is `available on PyPI <https://pypi.org/project/pytest>`_.
+     $ gh workflow run deploy.yml -R pytest-dev/pytest --ref=release-{VERSION} -f version={VERSION}
+
+   This job will require approval from ``pytest-dev/core``, after which it will publish to PyPI
+   and tag the repository.
 
 #. Merge the PR. **Make sure it's not squash-merged**, so that the tagged commit ends up in the main branch.
 
@@ -160,16 +162,16 @@ Both automatic and manual processes described above follow the same steps from t
        git tag MAJOR.{MINOR+1}.0.dev0
        git push upstream MAJOR.{MINOR+1}.0.dev0
 
-#. For major and minor releases, change the default version in the `Read the Docs Settings <https://readthedocs.org/dashboard/pytest/advanced/>`_ to the new branch.
-
 #. Send an email announcement with the contents from::
 
      doc/en/announce/release-<VERSION>.rst
 
    To the following mailing lists:
 
-   * pytest-dev@python.org (all releases)
-   * python-announce-list@python.org (all releases)
-   * testing-in-python@lists.idyll.org (only major/minor releases)
+   * python-announce-list@python.org
 
-   And announce it on `Twitter <https://twitter.com/>`_ with the ``#pytest`` hashtag.
+   And announce it with the ``#pytest`` hashtag on:
+
+   * `Bluesky <https://bsky.app>`_
+   * `Fosstodon <https://fosstodon.org>`_
+   * `Twitter/X <https://x.com>`_

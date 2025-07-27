@@ -9,7 +9,7 @@ Get Started
 Install ``pytest``
 ----------------------------------------
 
-``pytest`` requires: Python 3.7+ or PyPy3.
+``pytest`` requires: Python 3.8+ or PyPy3.
 
 1. Run the following command in your command line:
 
@@ -22,7 +22,7 @@ Install ``pytest``
 .. code-block:: bash
 
     $ pytest --version
-    pytest 7.0.1
+    pytest 8.4.1
 
 .. _`simpletest`:
 
@@ -47,7 +47,7 @@ The test
 
     $ pytest
     =========================== test session starts ============================
-    platform linux -- Python 3.x.y, pytest-7.x.y, pluggy-1.x.y
+    platform linux -- Python 3.x.y, pytest-8.x.y, pluggy-1.x.y
     rootdir: /home/sweet/project
     collected 1 item
 
@@ -108,6 +108,8 @@ Execute the test function with “quiet” reporting mode:
 .. note::
 
     The ``-q/--quiet`` flag keeps the output brief in this and following examples.
+
+See :ref:`assertraises` for specifying more details about the expected exception.
 
 Group multiple tests in a class
 --------------------------------------------------------------
@@ -250,7 +252,7 @@ Continue reading
 Check out additional pytest resources to help you customize tests for your unique workflow:
 
 * ":ref:`usage`" for command line invocation examples
-* ":ref:`existingtestsuite`" for working with pre-existing tests
+* ":ref:`existingtestsuite`" for working with preexisting tests
 * ":ref:`mark`" for information on the ``pytest.mark`` mechanism
 * ":ref:`fixtures`" for providing a functional baseline to your tests
 * ":ref:`plugins`" for managing and writing plugins

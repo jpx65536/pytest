@@ -51,6 +51,9 @@ Here is a little annotated list for some popular plugins:
 * :pypi:`pytest-flakes`:
   check source code with pyflakes.
 
+* :pypi:`allure-pytest`:
+  report test results via `allure-framework <https://github.com/allure-framework/>`_.
+
 To see a complete list of all plugins with their latest testing
 status against different pytest and Python versions, please visit
 :ref:`plugin-list`.
@@ -130,4 +133,32 @@ CI server), you can set ``PYTEST_ADDOPTS`` environment variable to
 
 See :ref:`findpluginname` for how to obtain the name of a plugin.
 
-.. _`builtin plugins`:
+.. _`disable_plugin_autoload`:
+
+Disabling plugins from autoloading
+----------------------------------
+
+If you want to disable plugins from loading automatically, instead of requiring you to
+manually specify each plugin with ``-p`` or :envvar:`PYTEST_PLUGINS`, you can use ``--disable-plugin-autoload`` or :envvar:`PYTEST_DISABLE_PLUGIN_AUTOLOAD`.
+
+.. code-block:: bash
+
+   export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+   export PYTEST_PLUGINS=NAME,NAME2
+   pytest
+
+.. code-block:: bash
+
+   pytest --disable-plugin-autoload -p NAME,NAME2
+
+.. code-block:: ini
+
+    [pytest]
+    addopts =
+            --disable-plugin-autoload
+            -p NAME
+            -p NAME2
+
+.. versionadded:: 8.4
+
+   The ``--disable-plugin-autoload`` command-line flag.

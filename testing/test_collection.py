@@ -1,12 +1,16 @@
+# mypy: allow-untyped-defs
+from __future__ import annotations
+
 import os
+from pathlib import Path
+from pathlib import PurePath
 import pprint
 import shutil
 import sys
+import tempfile
 import textwrap
-from pathlib import Path
-from typing import List
 
-import pytest
+from _pytest.assertion.util import running_on_ci
 from _pytest.config import ExitCode
 from _pytest.fixtures import FixtureRequest
 from _pytest.main import _in_venv
@@ -16,6 +20,7 @@ from _pytest.nodes import Item
 from _pytest.pathlib import symlink_or_skip
 from _pytest.pytester import HookRecorder
 from _pytest.pytester import Pytester
+import pytest
 
 
 def ensure_file(file_path: Path) -> Path:
@@ -99,7 +104,8 @@ class TestCollector:
             conftest="""
             import pytest
             class CustomFile(pytest.File):
-                pass
+                def collect(self):
+                    return []
             def pytest_collect_file(file_path, parent):
                 if file_path.suffix == ".xxx":
                     return CustomFile.from_parent(path=file_path, parent=parent)
@@ -140,29 +146,26 @@ class TestCollectFS:
         ensure_file(tmp_path / ".bzr" / "test_notfound.py")
         ensure_file(tmp_path / "normal" / "test_found.py")
         for x in tmp_path.rglob("test_*.py"):
-            x.write_text("def test_hello(): pass", "utf-8")
+            x.write_text("def test_hello(): pass", encoding="utf-8")
 
         result = pytester.runpytest("--collect-only")
         s = result.stdout.str()
         assert "test_notfound" not in s
         assert "test_found" in s
 
-    @pytest.mark.parametrize(
-        "fname",
-        (
-            "activate",
-            "activate.csh",
-            "activate.fish",
-            "Activate",
-            "Activate.bat",
-            "Activate.ps1",
-        ),
+    known_environment_types = pytest.mark.parametrize(
+        "env_path",
+        [
+            pytest.param(PurePath("pyvenv.cfg"), id="venv"),
+            pytest.param(PurePath("conda-meta", "history"), id="conda"),
+        ],
     )
-    def test_ignored_virtualenvs(self, pytester: Pytester, fname: str) -> None:
-        bindir = "Scripts" if sys.platform.startswith("win") else "bin"
-        ensure_file(pytester.path / "virtual" / bindir / fname)
+
+    @known_environment_types
+    def test_ignored_virtualenvs(self, pytester: Pytester, env_path: PurePath) -> None:
+        ensure_file(pytester.path / "virtual" / env_path)
         testfile = ensure_file(pytester.path / "virtual" / "test_invenv.py")
-        testfile.write_text("def test_hello(): pass")
+        testfile.write_text("def test_hello(): pass", encoding="utf-8")
 
         # by default, ignore tests inside a virtualenv
         result = pytester.runpytest()
@@ -174,52 +177,28 @@ class TestCollectFS:
         result = pytester.runpytest("virtual")
         assert "test_invenv" in result.stdout.str()
 
-    @pytest.mark.parametrize(
-        "fname",
-        (
-            "activate",
-            "activate.csh",
-            "activate.fish",
-            "Activate",
-            "Activate.bat",
-            "Activate.ps1",
-        ),
-    )
+    @known_environment_types
     def test_ignored_virtualenvs_norecursedirs_precedence(
-        self, pytester: Pytester, fname: str
+        self, pytester: Pytester, env_path
     ) -> None:
-        bindir = "Scripts" if sys.platform.startswith("win") else "bin"
         # norecursedirs takes priority
-        ensure_file(pytester.path / ".virtual" / bindir / fname)
+        ensure_file(pytester.path / ".virtual" / env_path)
         testfile = ensure_file(pytester.path / ".virtual" / "test_invenv.py")
-        testfile.write_text("def test_hello(): pass")
+        testfile.write_text("def test_hello(): pass", encoding="utf-8")
         result = pytester.runpytest("--collect-in-virtualenv")
         result.stdout.no_fnmatch_line("*test_invenv*")
         # ...unless the virtualenv is explicitly given on the CLI
         result = pytester.runpytest("--collect-in-virtualenv", ".virtual")
         assert "test_invenv" in result.stdout.str()
 
-    @pytest.mark.parametrize(
-        "fname",
-        (
-            "activate",
-            "activate.csh",
-            "activate.fish",
-            "Activate",
-            "Activate.bat",
-            "Activate.ps1",
-        ),
-    )
-    def test__in_venv(self, pytester: Pytester, fname: str) -> None:
+    @known_environment_types
+    def test__in_venv(self, pytester: Pytester, env_path: PurePath) -> None:
         """Directly test the virtual env detection function"""
-        bindir = "Scripts" if sys.platform.startswith("win") else "bin"
-        # no bin/activate, not a virtualenv
+        # no env path, not a env
         base_path = pytester.mkdir("venv")
         assert _in_venv(base_path) is False
-        # with bin/activate, totally a virtualenv
-        bin_path = base_path.joinpath(bindir)
-        bin_path.mkdir()
-        bin_path.joinpath(fname).touch()
+        # with env path, totally a env
+        ensure_file(base_path.joinpath(env_path))
         assert _in_venv(base_path) is True
 
     def test_custom_norecursedirs(self, pytester: Pytester) -> None:
@@ -231,10 +210,14 @@ class TestCollectFS:
         )
         tmp_path = pytester.path
         ensure_file(tmp_path / "mydir" / "test_hello.py").write_text(
-            "def test_1(): pass"
+            "def test_1(): pass", encoding="utf-8"
         )
-        ensure_file(tmp_path / "xyz123" / "test_2.py").write_text("def test_2(): 0/0")
-        ensure_file(tmp_path / "xy" / "test_ok.py").write_text("def test_3(): pass")
+        ensure_file(tmp_path / "xyz123" / "test_2.py").write_text(
+            "def test_2(): 0/0", encoding="utf-8"
+        )
+        ensure_file(tmp_path / "xy" / "test_ok.py").write_text(
+            "def test_3(): pass", encoding="utf-8"
+        )
         rec = pytester.inline_run()
         rec.assertoutcome(passed=1)
         rec = pytester.inline_run("xyz123/test_2.py")
@@ -244,31 +227,54 @@ class TestCollectFS:
         pytester.makeini(
             """
             [pytest]
-            testpaths = gui uts
+            testpaths = */tests
         """
         )
         tmp_path = pytester.path
-        ensure_file(tmp_path / "env" / "test_1.py").write_text("def test_env(): pass")
-        ensure_file(tmp_path / "gui" / "test_2.py").write_text("def test_gui(): pass")
-        ensure_file(tmp_path / "uts" / "test_3.py").write_text("def test_uts(): pass")
+        ensure_file(tmp_path / "a" / "test_1.py").write_text(
+            "def test_a(): pass", encoding="utf-8"
+        )
+        ensure_file(tmp_path / "b" / "tests" / "test_2.py").write_text(
+            "def test_b(): pass", encoding="utf-8"
+        )
+        ensure_file(tmp_path / "c" / "tests" / "test_3.py").write_text(
+            "def test_c(): pass", encoding="utf-8"
+        )
 
         # executing from rootdir only tests from `testpaths` directories
         # are collected
         items, reprec = pytester.inline_genitems("-v")
-        assert [x.name for x in items] == ["test_gui", "test_uts"]
+        assert [x.name for x in items] == ["test_b", "test_c"]
 
         # check that explicitly passing directories in the command-line
         # collects the tests
-        for dirname in ("env", "gui", "uts"):
+        for dirname in ("a", "b", "c"):
             items, reprec = pytester.inline_genitems(tmp_path.joinpath(dirname))
-            assert [x.name for x in items] == ["test_%s" % dirname]
+            assert [x.name for x in items] == [f"test_{dirname}"]
 
         # changing cwd to each subdirectory and running pytest without
         # arguments collects the tests in that directory normally
-        for dirname in ("env", "gui", "uts"):
+        for dirname in ("a", "b", "c"):
             monkeypatch.chdir(pytester.path.joinpath(dirname))
             items, reprec = pytester.inline_genitems()
-            assert [x.name for x in items] == ["test_%s" % dirname]
+            assert [x.name for x in items] == [f"test_{dirname}"]
+
+    def test_missing_permissions_on_unselected_directory_doesnt_crash(
+        self, pytester: Pytester
+    ) -> None:
+        """Regression test for #12120."""
+        test = pytester.makepyfile(test="def test(): pass")
+        bad = pytester.mkdir("bad")
+        try:
+            bad.chmod(0)
+
+            result = pytester.runpytest(test)
+        finally:
+            bad.chmod(750)
+            bad.rmdir()
+
+        assert result.ret == ExitCode.OK
+        result.assert_outcomes(passed=1)
 
 
 class TestCollectPluginHookRelay:
@@ -324,16 +330,38 @@ class TestPrunetraceback:
         pytester.makeconftest(
             """
             import pytest
-            @pytest.hookimpl(hookwrapper=True)
+            @pytest.hookimpl(wrapper=True)
             def pytest_make_collect_report():
-                outcome = yield
-                rep = outcome.get_result()
+                rep = yield
                 rep.headerlines += ["header1"]
-                outcome.force_result(rep)
+                return rep
         """
         )
         result = pytester.runpytest(p)
         result.stdout.fnmatch_lines(["*ERROR collecting*", "*header1*"])
+
+    def test_collection_error_traceback_is_clean(self, pytester: Pytester) -> None:
+        """When a collection error occurs, the report traceback doesn't contain
+        internal pytest stack entries.
+
+        Issue #11710.
+        """
+        pytester.makepyfile(
+            """
+            raise Exception("LOUSY")
+            """
+        )
+        result = pytester.runpytest()
+        result.stdout.fnmatch_lines(
+            [
+                "*ERROR collecting*",
+                "test_*.py:1: in <module>",
+                '    raise Exception("LOUSY")',
+                "E   Exception: LOUSY",
+                "*= short test summary info =*",
+            ],
+            consecutive=True,
+        )
 
 
 class TestCustomConftests:
@@ -345,8 +373,8 @@ class TestCustomConftests:
         """
         )
         sub = pytester.mkdir("xy123")
-        ensure_file(sub / "test_hello.py").write_text("syntax error")
-        sub.joinpath("conftest.py").write_text("syntax error")
+        ensure_file(sub / "test_hello.py").write_text("syntax error", encoding="utf-8")
+        sub.joinpath("conftest.py").write_text("syntax error", encoding="utf-8")
         pytester.makepyfile("def test_hello(): pass")
         pytester.makepyfile(test_one="syntax error")
         result = pytester.runpytest("--fulltrace")
@@ -480,9 +508,9 @@ class TestSession:
         # assert root2 == rcol, rootid
         colitems = rcol.perform_collect([rcol.nodeid], genitems=False)
         assert len(colitems) == 1
-        assert colitems[0].path == p
+        assert colitems[0].path == topdir
 
-    def get_reported_items(self, hookrec: HookRecorder) -> List[Item]:
+    def get_reported_items(self, hookrec: HookRecorder) -> list[Item]:
         """Return pytest.Item instances reported by the pytest_collectreport hook"""
         calls = hookrec.getcalls("pytest_collectreport")
         return [
@@ -501,7 +529,7 @@ class TestSession:
         newid = item.nodeid
         assert newid == id
         pprint.pprint(hookrec.calls)
-        topdir = pytester.path  # noqa
+        topdir = pytester.path  # noqa: F841
         hookrec.assert_contains(
             [
                 ("pytest_collectstart", "collector.path == topdir"),
@@ -536,7 +564,7 @@ class TestSession:
     def test_collect_custom_nodes_multi_id(self, pytester: Pytester) -> None:
         p = pytester.makepyfile("def test_func(): pass")
         pytester.makeconftest(
-            """
+            f"""
             import pytest
             class SpecialItem(pytest.Item):
                 def runtest(self):
@@ -545,10 +573,9 @@ class TestSession:
                 def collect(self):
                     return [SpecialItem.from_parent(name="check", parent=self)]
             def pytest_collect_file(file_path, parent):
-                if file_path.name == %r:
+                if file_path.name == {p.name!r}:
                     return SpecialFile.from_parent(path=file_path, parent=parent)
         """
-            % p.name
         )
         id = p.name
 
@@ -637,6 +664,23 @@ class TestSession:
         # ensure we are reporting the collection of the single test item (#2464)
         assert [x.name for x in self.get_reported_items(hookrec)] == ["test_method"]
 
+    def test_collect_parametrized_order(self, pytester: Pytester) -> None:
+        p = pytester.makepyfile(
+            """
+            import pytest
+
+            @pytest.mark.parametrize('i', [0, 1, 2])
+            def test_param(i): ...
+            """
+        )
+        items, hookrec = pytester.inline_genitems(f"{p}::test_param")
+        assert len(items) == 3
+        assert [item.nodeid for item in items] == [
+            "test_collect_parametrized_order.py::test_param[0]",
+            "test_collect_parametrized_order.py::test_param[1]",
+            "test_collect_parametrized_order.py::test_param[2]",
+        ]
+
 
 class Test_getinitialnodes:
     def test_global_file(self, pytester: Pytester) -> None:
@@ -647,11 +691,12 @@ class Test_getinitialnodes:
         assert isinstance(col, pytest.Module)
         assert col.name == "x.py"
         assert col.parent is not None
-        assert col.parent.parent is None
+        assert col.parent.parent is not None
+        assert col.parent.parent.parent is None
         for parent in col.listchain():
             assert parent.config is config
 
-    def test_pkgfile(self, pytester: Pytester) -> None:
+    def test_pkgfile(self, pytester: Pytester, monkeypatch: MonkeyPatch) -> None:
         """Verify nesting when a module is within a package.
         The parent chain should match: Module<x.py> -> Package<subdir> -> Session.
             Session's parent should always be None.
@@ -660,7 +705,8 @@ class Test_getinitialnodes:
         subdir = tmp_path.joinpath("subdir")
         x = ensure_file(subdir / "x.py")
         ensure_file(subdir / "__init__.py")
-        with subdir.cwd():
+        with monkeypatch.context() as mp:
+            mp.chdir(subdir)
             config = pytester.parseconfigure(x)
         col = pytester.getnode(config, x)
         assert col is not None
@@ -730,6 +776,20 @@ class Test_genitems:
         assert s.endswith("test_example_items1.testone")
         print(s)
 
+    def test_classmethod_is_discovered(self, pytester: Pytester) -> None:
+        """Test that classmethods are discovered"""
+        p = pytester.makepyfile(
+            """
+            class TestCase:
+                @classmethod
+                def test_classmethod(cls) -> None:
+                    pass
+            """
+        )
+        items, reprec = pytester.inline_genitems(p)
+        ids = [x.getmodpath() for x in items]  # type: ignore[attr-defined]
+        assert ids == ["TestCase.test_classmethod"]
+
     def test_class_and_functions_discovery_using_glob(self, pytester: Pytester) -> None:
         """Test that Python_classes and Python_functions config options work
         as prefixes and glob-like patterns (#600)."""
@@ -793,7 +853,7 @@ def test_matchnodes_two_collections_same_file(pytester: Pytester) -> None:
     result = pytester.runpytest()
     assert result.ret == 0
     result.stdout.fnmatch_lines(["*2 passed*"])
-    res = pytester.runpytest("%s::item2" % p.name)
+    res = pytester.runpytest(f"{p.name}::item2")
     res.stdout.fnmatch_lines(["*1 passed*"])
 
 
@@ -910,6 +970,46 @@ class TestNodeKeywords:
         assert mod.keywords["foo"] == pytest.mark.foo.mark
         assert "bar" not in mod.keywords
         assert "baz" not in mod.keywords
+
+
+class TestCollectDirectoryHook:
+    def test_custom_directory_example(self, pytester: Pytester) -> None:
+        """Verify the example from the customdirectory.rst doc."""
+        pytester.copy_example("customdirectory")
+
+        reprec = pytester.inline_run()
+
+        reprec.assertoutcome(passed=2, failed=0)
+        calls = reprec.getcalls("pytest_collect_directory")
+        assert len(calls) == 2
+        assert calls[0].path == pytester.path
+        assert isinstance(calls[0].parent, pytest.Session)
+        assert calls[1].path == pytester.path / "tests"
+        assert isinstance(calls[1].parent, pytest.Dir)
+
+    def test_directory_ignored_if_none(self, pytester: Pytester) -> None:
+        """If the (entire) hook returns None, it's OK, the directory is ignored."""
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.hookimpl(wrapper=True)
+            def pytest_collect_directory():
+                yield
+                return None
+            """,
+        )
+        pytester.makepyfile(
+            **{
+                "tests/test_it.py": """
+                    import pytest
+
+                    def test_it(): pass
+                """,
+            },
+        )
+        reprec = pytester.inline_run()
+        reprec.assertoutcome(passed=0, failed=0)
 
 
 COLLECTION_ERROR_PY_FILES = dict(
@@ -1041,13 +1141,18 @@ def test_fixture_scope_sibling_conftests(pytester: Pytester) -> None:
             def fix():
                 return 1
             """
-        )
+        ),
+        encoding="utf-8",
     )
-    foo_path.joinpath("test_foo.py").write_text("def test_foo(fix): assert fix == 1")
+    foo_path.joinpath("test_foo.py").write_text(
+        "def test_foo(fix): assert fix == 1", encoding="utf-8"
+    )
 
     # Tests in `food/` should not see the conftest fixture from `foo/`
     food_path = pytester.mkpydir("food")
-    food_path.joinpath("test_food.py").write_text("def test_food(fix): assert fix == 1")
+    food_path.joinpath("test_food.py").write_text(
+        "def test_food(fix): assert fix == 1", encoding="utf-8"
+    )
 
     res = pytester.runpytest()
     assert res.ret == 1
@@ -1068,22 +1173,24 @@ def test_collect_init_tests(pytester: Pytester) -> None:
     result.stdout.fnmatch_lines(
         [
             "collected 2 items",
-            "<Package tests>",
-            "  <Module __init__.py>",
-            "    <Function test_init>",
-            "  <Module test_foo.py>",
-            "    <Function test_foo>",
+            "<Dir *>",
+            "  <Package tests>",
+            "    <Module __init__.py>",
+            "      <Function test_init>",
+            "    <Module test_foo.py>",
+            "      <Function test_foo>",
         ]
     )
     result = pytester.runpytest("./tests", "--collect-only")
     result.stdout.fnmatch_lines(
         [
             "collected 2 items",
-            "<Package tests>",
-            "  <Module __init__.py>",
-            "    <Function test_init>",
-            "  <Module test_foo.py>",
-            "    <Function test_foo>",
+            "<Dir *>",
+            "  <Package tests>",
+            "    <Module __init__.py>",
+            "      <Function test_init>",
+            "    <Module test_foo.py>",
+            "      <Function test_foo>",
         ]
     )
     # Ignores duplicates with "." and pkginit (#4310).
@@ -1091,11 +1198,12 @@ def test_collect_init_tests(pytester: Pytester) -> None:
     result.stdout.fnmatch_lines(
         [
             "collected 2 items",
-            "<Package tests>",
-            "  <Module __init__.py>",
-            "    <Function test_init>",
-            "  <Module test_foo.py>",
-            "    <Function test_foo>",
+            "<Dir *>",
+            "  <Package tests>",
+            "    <Module __init__.py>",
+            "      <Function test_init>",
+            "    <Module test_foo.py>",
+            "      <Function test_foo>",
         ]
     )
     # Same as before, but different order.
@@ -1103,21 +1211,32 @@ def test_collect_init_tests(pytester: Pytester) -> None:
     result.stdout.fnmatch_lines(
         [
             "collected 2 items",
-            "<Package tests>",
-            "  <Module __init__.py>",
-            "    <Function test_init>",
-            "  <Module test_foo.py>",
-            "    <Function test_foo>",
+            "<Dir *>",
+            "  <Package tests>",
+            "    <Module __init__.py>",
+            "      <Function test_init>",
+            "    <Module test_foo.py>",
+            "      <Function test_foo>",
         ]
     )
     result = pytester.runpytest("./tests/test_foo.py", "--collect-only")
     result.stdout.fnmatch_lines(
-        ["<Package tests>", "  <Module test_foo.py>", "    <Function test_foo>"]
+        [
+            "<Dir *>",
+            "  <Package tests>",
+            "    <Module test_foo.py>",
+            "      <Function test_foo>",
+        ]
     )
     result.stdout.no_fnmatch_line("*test_init*")
     result = pytester.runpytest("./tests/__init__.py", "--collect-only")
     result.stdout.fnmatch_lines(
-        ["<Package tests>", "  <Module __init__.py>", "    <Function test_init>"]
+        [
+            "<Dir *>",
+            "  <Package tests>",
+            "    <Module __init__.py>",
+            "      <Function test_init>",
+        ]
     )
     result.stdout.no_fnmatch_line("*test_foo*")
 
@@ -1165,7 +1284,7 @@ def test_collect_handles_raising_on_dunder_class(pytester: Pytester) -> None:
     """
     )
     result = pytester.runpytest()
-    result.stdout.fnmatch_lines(["*1 passed in*"])
+    result.assert_outcomes(passed=1)
     assert result.ret == 0
 
 
@@ -1173,23 +1292,21 @@ def test_collect_with_chdir_during_import(pytester: Pytester) -> None:
     subdir = pytester.mkdir("sub")
     pytester.path.joinpath("conftest.py").write_text(
         textwrap.dedent(
-            """
+            f"""
             import os
-            os.chdir(%r)
+            os.chdir({str(subdir)!r})
             """
-            % (str(subdir),)
-        )
+        ),
+        encoding="utf-8",
     )
     pytester.makepyfile(
-        """
+        f"""
         def test_1():
             import os
-            assert os.getcwd() == %r
+            assert os.getcwd() == {str(subdir)!r}
         """
-        % (str(subdir),)
     )
-    with pytester.path.cwd():
-        result = pytester.runpytest()
+    result = pytester.runpytest()
     result.stdout.fnmatch_lines(["*1 passed in*"])
     assert result.ret == 0
 
@@ -1200,8 +1317,7 @@ def test_collect_with_chdir_during_import(pytester: Pytester) -> None:
         testpaths = .
     """
     )
-    with pytester.path.cwd():
-        result = pytester.runpytest("--collect-only")
+    result = pytester.runpytest("--collect-only")
     result.stdout.fnmatch_lines(["collected 1 item"])
 
 
@@ -1210,8 +1326,12 @@ def test_collect_pyargs_with_testpaths(
 ) -> None:
     testmod = pytester.mkdir("testmod")
     # NOTE: __init__.py is not collected since it does not match python_files.
-    testmod.joinpath("__init__.py").write_text("def test_func(): pass")
-    testmod.joinpath("test_file.py").write_text("def test_func(): pass")
+    testmod.joinpath("__init__.py").write_text(
+        "def test_func(): pass", encoding="utf-8"
+    )
+    testmod.joinpath("test_file.py").write_text(
+        "def test_func(): pass", encoding="utf-8"
+    )
 
     root = pytester.mkdir("root")
     root.joinpath("pytest.ini").write_text(
@@ -1221,12 +1341,64 @@ def test_collect_pyargs_with_testpaths(
         addopts = --pyargs
         testpaths = testmod
     """
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setenv("PYTHONPATH", str(pytester.path), prepend=os.pathsep)
-    with root.cwd():
+    with monkeypatch.context() as mp:
+        mp.chdir(root)
         result = pytester.runpytest_subprocess()
-    result.stdout.fnmatch_lines(["*1 passed in*"])
+    result.assert_outcomes(passed=1)
+
+
+def test_initial_conftests_with_testpaths(pytester: Pytester) -> None:
+    """The testpaths ini option should load conftests in those paths as 'initial' (#10987)."""
+    p = pytester.mkdir("some_path")
+    p.joinpath("conftest.py").write_text(
+        textwrap.dedent(
+            """
+            def pytest_sessionstart(session):
+                raise Exception("pytest_sessionstart hook successfully run")
+            """
+        ),
+        encoding="utf-8",
+    )
+    pytester.makeini(
+        """
+        [pytest]
+        testpaths = some_path
+        """
+    )
+
+    # No command line args - falls back to testpaths.
+    result = pytester.runpytest()
+    assert result.ret == ExitCode.INTERNAL_ERROR
+    result.stdout.fnmatch_lines(
+        "INTERNALERROR* Exception: pytest_sessionstart hook successfully run"
+    )
+
+    # No fallback.
+    result = pytester.runpytest(".")
+    assert result.ret == ExitCode.NO_TESTS_COLLECTED
+
+
+def test_large_option_breaks_initial_conftests(pytester: Pytester) -> None:
+    """Long option values do not break initial conftests handling (#10169)."""
+    option_value = "x" * 1024 * 1000
+    pytester.makeconftest(
+        """
+        def pytest_addoption(parser):
+            parser.addoption("--xx", default=None)
+        """
+    )
+    pytester.makepyfile(
+        f"""
+        def test_foo(request):
+            assert request.config.getoption("xx") == {option_value!r}
+        """
+    )
+    result = pytester.runpytest(f"--xx={option_value}")
+    assert result.ret == 0
 
 
 def test_collect_symlink_file_arg(pytester: Pytester) -> None:
@@ -1256,13 +1428,14 @@ def test_collect_symlink_out_of_tree(pytester: Pytester) -> None:
             assert request.node.nodeid == "test_real.py::test_nodeid"
         """
         ),
+        encoding="utf-8",
     )
 
     out_of_tree = pytester.mkdir("out_of_tree")
     symlink_to_sub = out_of_tree.joinpath("symlink_to_sub")
     symlink_or_skip(sub, symlink_to_sub)
     os.chdir(sub)
-    result = pytester.runpytest("-vs", "--rootdir=%s" % sub, symlink_to_sub)
+    result = pytester.runpytest("-vs", f"--rootdir={sub}", symlink_to_sub)
     result.stdout.fnmatch_lines(
         [
             # Should not contain "sub/"!
@@ -1284,12 +1457,16 @@ def test_collect_symlink_dir(pytester: Pytester) -> None:
 def test_collectignore_via_conftest(pytester: Pytester) -> None:
     """collect_ignore in parent conftest skips importing child (issue #4592)."""
     tests = pytester.mkpydir("tests")
-    tests.joinpath("conftest.py").write_text("collect_ignore = ['ignore_me']")
+    tests.joinpath("conftest.py").write_text(
+        "collect_ignore = ['ignore_me']", encoding="utf-8"
+    )
 
     ignore_me = tests.joinpath("ignore_me")
     ignore_me.mkdir()
     ignore_me.joinpath("__init__.py").touch()
-    ignore_me.joinpath("conftest.py").write_text("assert 0, 'should_not_be_called'")
+    ignore_me.joinpath("conftest.py").write_text(
+        "assert 0, 'should_not_be_called'", encoding="utf-8"
+    )
 
     result = pytester.runpytest()
     assert result.ret == ExitCode.NO_TESTS_COLLECTED
@@ -1298,23 +1475,31 @@ def test_collectignore_via_conftest(pytester: Pytester) -> None:
 def test_collect_pkg_init_and_file_in_args(pytester: Pytester) -> None:
     subdir = pytester.mkdir("sub")
     init = subdir.joinpath("__init__.py")
-    init.write_text("def test_init(): pass")
+    init.write_text("def test_init(): pass", encoding="utf-8")
     p = subdir.joinpath("test_file.py")
-    p.write_text("def test_file(): pass")
+    p.write_text("def test_file(): pass", encoding="utf-8")
 
-    # NOTE: without "-o python_files=*.py" this collects test_file.py twice.
-    # This changed/broke with "Add package scoped fixtures #2283" (2b1410895)
-    # initially (causing a RecursionError).
-    result = pytester.runpytest("-v", str(init), str(p))
+    # Just the package directory, the __init__.py module is filtered out.
+    result = pytester.runpytest("-v", subdir)
     result.stdout.fnmatch_lines(
         [
             "sub/test_file.py::test_file PASSED*",
+            "*1 passed in*",
+        ]
+    )
+
+    # But it's included if specified directly.
+    result = pytester.runpytest("-v", init, p)
+    result.stdout.fnmatch_lines(
+        [
+            "sub/__init__.py::test_init PASSED*",
             "sub/test_file.py::test_file PASSED*",
             "*2 passed in*",
         ]
     )
 
-    result = pytester.runpytest("-v", "-o", "python_files=*.py", str(init), str(p))
+    # Or if the pattern allows it.
+    result = pytester.runpytest("-v", "-o", "python_files=*.py", subdir)
     result.stdout.fnmatch_lines(
         [
             "sub/__init__.py::test_init PASSED*",
@@ -1327,12 +1512,15 @@ def test_collect_pkg_init_and_file_in_args(pytester: Pytester) -> None:
 def test_collect_pkg_init_only(pytester: Pytester) -> None:
     subdir = pytester.mkdir("sub")
     init = subdir.joinpath("__init__.py")
-    init.write_text("def test_init(): pass")
+    init.write_text("def test_init(): pass", encoding="utf-8")
 
-    result = pytester.runpytest(str(init))
+    result = pytester.runpytest(subdir)
     result.stdout.fnmatch_lines(["*no tests ran in*"])
 
-    result = pytester.runpytest("-v", "-o", "python_files=*.py", str(init))
+    result = pytester.runpytest("-v", init)
+    result.stdout.fnmatch_lines(["sub/__init__.py::test_init PASSED*", "*1 passed in*"])
+
+    result = pytester.runpytest("-v", "-o", "python_files=*.py", subdir)
     result.stdout.fnmatch_lines(["sub/__init__.py::test_init PASSED*", "*1 passed in*"])
 
 
@@ -1342,7 +1530,7 @@ def test_collect_sub_with_symlinks(use_pkg: bool, pytester: Pytester) -> None:
     sub = pytester.mkdir("sub")
     if use_pkg:
         sub.joinpath("__init__.py").touch()
-    sub.joinpath("test_file.py").write_text("def test_file(): pass")
+    sub.joinpath("test_file.py").write_text("def test_file(): pass", encoding="utf-8")
 
     # Create a broken symlink.
     symlink_or_skip("test_doesnotexist.py", sub.joinpath("test_broken.py"))
@@ -1380,7 +1568,7 @@ def test_collector_respects_tbstyle(pytester: Pytester) -> None:
 def test_does_not_eagerly_collect_packages(pytester: Pytester) -> None:
     pytester.makepyfile("def test(): pass")
     pydir = pytester.mkpydir("foopkg")
-    pydir.joinpath("__init__.py").write_text("assert False")
+    pydir.joinpath("__init__.py").write_text("assert False", encoding="utf-8")
     result = pytester.runpytest()
     assert result.ret == ExitCode.OK
 
@@ -1409,13 +1597,16 @@ def test_fscollector_from_parent(pytester: Pytester, request: FixtureRequest) ->
             super().__init__(*k, **kw)
             self.x = x
 
+        def collect(self):
+            raise NotImplementedError()
+
     collector = MyCollector.from_parent(
         parent=request.session, path=pytester.path / "foo", x=10
     )
     assert collector.x == 10
 
 
-def test_class_from_parent(pytester: Pytester, request: FixtureRequest) -> None:
+def test_class_from_parent(request: FixtureRequest) -> None:
     """Ensure Class.from_parent can forward custom arguments to the constructor."""
 
     class MyCollector(pytest.Class):
@@ -1424,7 +1615,7 @@ def test_class_from_parent(pytester: Pytester, request: FixtureRequest) -> None:
             self.x = x
 
         @classmethod
-        def from_parent(cls, parent, *, name, x):
+        def from_parent(cls, parent, *, name, x):  # type: ignore[override]
             return super().from_parent(parent=parent, name=name, x=x)
 
     collector = MyCollector.from_parent(parent=request.session, name="foo", x=10)
@@ -1456,13 +1647,11 @@ class TestImportModeImportlib:
         pytester.makepyfile(
             **{
                 "tests/conftest.py": "",
-                "tests/test_foo.py": """
+                "tests/test_foo.py": f"""
                 import sys
                 def test_check():
                     assert r"{tests_dir}" not in sys.path
-                """.format(
-                    tests_dir=tests_dir
-                ),
+                """,
             }
         )
         result = pytester.runpytest("-v", "--import-mode=importlib")
@@ -1563,3 +1752,247 @@ def test_does_not_crash_on_recursive_symlink(pytester: Pytester) -> None:
 
     assert result.ret == ExitCode.OK
     assert result.parseoutcomes() == {"passed": 1}
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows only")
+def test_collect_short_file_windows(pytester: Pytester) -> None:
+    """Reproducer for #11895: short paths not collected on Windows."""
+    short_path = tempfile.mkdtemp()
+    if "~" not in short_path:  # pragma: no cover
+        if running_on_ci():
+            # On CI, we are expecting that under the current GitHub actions configuration,
+            # tempfile.mkdtemp() is producing short paths, so we want to fail to prevent
+            # this from silently changing without us noticing.
+            pytest.fail(
+                f"tempfile.mkdtemp() failed to produce a short path on CI: {short_path}"
+            )
+        else:
+            # We want to skip failing this test locally in this situation because
+            # depending on the local configuration tempfile.mkdtemp() might not produce a short path:
+            # For example, user might have configured %TEMP% exactly to avoid generating short paths.
+            pytest.skip(
+                f"tempfile.mkdtemp() failed to produce a short path: {short_path}, skipping"
+            )
+
+    test_file = Path(short_path).joinpath("test_collect_short_file_windows.py")
+    test_file.write_text("def test(): pass", encoding="UTF-8")
+    result = pytester.runpytest(short_path)
+    assert result.parseoutcomes() == {"passed": 1}
+
+
+def test_pyargs_collection_tree(pytester: Pytester, monkeypatch: MonkeyPatch) -> None:
+    """When using `--pyargs`, the collection tree of a pyargs collection
+    argument should only include parents in the import path, not up to confcutdir.
+
+    Regression test for #11904.
+    """
+    site_packages = pytester.path / "venv/lib/site-packages"
+    site_packages.mkdir(parents=True)
+    monkeypatch.syspath_prepend(site_packages)
+    pytester.makepyfile(
+        **{
+            "venv/lib/site-packages/pkg/__init__.py": "",
+            "venv/lib/site-packages/pkg/sub/__init__.py": "",
+            "venv/lib/site-packages/pkg/sub/test_it.py": "def test(): pass",
+        }
+    )
+
+    result = pytester.runpytest("--pyargs", "--collect-only", "pkg.sub.test_it")
+    assert result.ret == ExitCode.OK
+    result.stdout.fnmatch_lines(
+        [
+            "<Package venv/lib/site-packages/pkg>",
+            "  <Package sub>",
+            "    <Module test_it.py>",
+            "      <Function test>",
+        ],
+        consecutive=True,
+    )
+
+    # Now with an unrelated rootdir with unrelated files.
+    monkeypatch.chdir(tempfile.gettempdir())
+
+    result = pytester.runpytest("--pyargs", "--collect-only", "pkg.sub.test_it")
+    assert result.ret == ExitCode.OK
+    result.stdout.fnmatch_lines(
+        [
+            "<Package *pkg>",
+            "  <Package sub>",
+            "    <Module test_it.py>",
+            "      <Function test>",
+        ],
+        consecutive=True,
+    )
+
+
+def test_do_not_collect_symlink_siblings(
+    pytester: Pytester, tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    """
+    Regression test for #12039: Do not collect from directories that are symlinks to other directories in the same path.
+
+    The check for short paths under Windows via os.path.samefile, introduced in #11936, also finds the symlinked
+    directory created by tmp_path/tmpdir.
+    """
+    # Use tmp_path because it creates a symlink with the name "current" next to the directory it creates.
+    symlink_path = tmp_path.parent / (tmp_path.name[:-1] + "current")
+    assert symlink_path.is_symlink() is True
+
+    # Create test file.
+    tmp_path.joinpath("test_foo.py").write_text("def test(): pass", encoding="UTF-8")
+
+    # Ensure we collect it only once if we pass the tmp_path.
+    result = pytester.runpytest(tmp_path, "-sv")
+    result.assert_outcomes(passed=1)
+
+    # Ensure we collect it only once if we pass the symlinked directory.
+    result = pytester.runpytest(symlink_path, "-sv")
+    result.assert_outcomes(passed=1)
+
+
+@pytest.mark.parametrize(
+    "exception_class, msg",
+    [
+        (KeyboardInterrupt, "*!!! KeyboardInterrupt !!!*"),
+        (SystemExit, "INTERNALERROR> SystemExit"),
+    ],
+)
+def test_respect_system_exceptions(
+    pytester: Pytester,
+    exception_class: type[BaseException],
+    msg: str,
+):
+    head = "Before exception"
+    tail = "After exception"
+    ensure_file(pytester.path / "test_eggs.py").write_text(
+        f"print('{head}')", encoding="UTF-8"
+    )
+    ensure_file(pytester.path / "test_ham.py").write_text(
+        f"raise {exception_class.__name__}()", encoding="UTF-8"
+    )
+    ensure_file(pytester.path / "test_spam.py").write_text(
+        f"print('{tail}')", encoding="UTF-8"
+    )
+
+    result = pytester.runpytest_subprocess("-s")
+    result.stdout.fnmatch_lines([f"*{head}*"])
+    result.stdout.fnmatch_lines([msg])
+    result.stdout.no_fnmatch_line(f"*{tail}*")
+
+
+def test_yield_disallowed_in_tests(pytester: Pytester):
+    """Ensure generator test functions with 'yield' fail collection (#12960)."""
+    pytester.makepyfile(
+        """
+        def test_with_yield():
+            yield 1
+        """
+    )
+    result = pytester.runpytest()
+    assert result.ret == 2
+    result.stdout.fnmatch_lines(
+        ["*'yield' keyword is allowed in fixtures, but not in tests (test_with_yield)*"]
+    )
+    # Assert that no tests were collected
+    result.stdout.fnmatch_lines(["*collected 0 items*"])
+
+
+def test_annotations_deferred_future(pytester: Pytester):
+    """Ensure stringified annotations don't raise any errors."""
+    pytester.makepyfile(
+        """
+        from __future__ import annotations
+        import pytest
+
+        @pytest.fixture
+        def func() -> X: ...  # X is undefined
+
+        def test_func():
+            assert True
+        """
+    )
+    result = pytester.runpytest()
+    assert result.ret == 0
+    result.stdout.fnmatch_lines(["*1 passed*"])
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 14), reason="Annotations are only skipped on 3.14+"
+)
+def test_annotations_deferred_314(pytester: Pytester):
+    """Ensure annotation eval is deferred."""
+    pytester.makepyfile(
+        """
+        import pytest
+
+        @pytest.fixture
+        def func() -> X: ...  # X is undefined
+
+        def test_func():
+            assert True
+        """
+    )
+    result = pytester.runpytest()
+    assert result.ret == 0
+    result.stdout.fnmatch_lines(["*1 passed*"])
+
+
+@pytest.mark.parametrize("import_mode", ["prepend", "importlib", "append"])
+def test_namespace_packages(pytester: Pytester, import_mode: str):
+    pytester.makeini(
+        f"""
+        [pytest]
+        consider_namespace_packages = true
+        pythonpath = .
+        python_files = *.py
+        addopts = --import-mode {import_mode}
+    """
+    )
+    pytester.makepyfile(
+        **{
+            "pkg/module1.py": "def test_module1(): pass",
+            "pkg/subpkg_namespace/module2.py": "def test_module1(): pass",
+            "pkg/subpkg_regular/__init__.py": "",
+            "pkg/subpkg_regular/module3": "def test_module3(): pass",
+        }
+    )
+
+    # should collect when called with top-level package correctly
+    result = pytester.runpytest("--collect-only", "--pyargs", "pkg")
+    result.stdout.fnmatch_lines(
+        [
+            "collected 3 items",
+            "<Dir pkg>",
+            "  <Module module1.py>",
+            "    <Function test_module1>",
+            "  <Dir subpkg_namespace>",
+            "    <Module module2.py>",
+            "      <Function test_module1>",
+            "  <Package subpkg_regular>",
+            "    <Module module3.py>",
+            "      <Function test_module3>",
+        ]
+    )
+
+    # should also work when called against a more specific subpackage/module
+    result = pytester.runpytest("--collect-only", "--pyargs", "pkg.subpkg_namespace")
+    result.stdout.fnmatch_lines(
+        [
+            "collected 1 item",
+            "<Dir pkg>",
+            "  <Dir subpkg_namespace>",
+            "    <Module module2.py>",
+            "      <Function test_module1>",
+        ]
+    )
+
+    result = pytester.runpytest("--collect-only", "--pyargs", "pkg.subpkg_regular")
+    result.stdout.fnmatch_lines(
+        [
+            "collected 1 item",
+            "<Dir pkg>",
+            "  <Package subpkg_regular>",
+            "    <Module module3.py>",
+            "      <Function test_module3>",
+        ]
+    )

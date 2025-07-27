@@ -1,3 +1,4 @@
+# mypy: disallow-untyped-defs
 """
 This script is part of the pytest release process which is triggered manually in the Actions
 tab of the repository.
@@ -9,19 +10,20 @@ The appropriate version will be obtained based on the given branch automatically
 
 After that, it will create a release using the `release` tox environment, and push a new PR.
 
-**Token**: currently the token from the GitHub Actions is used, pushed with
-`pytest bot <pytestbot@gmail.com>` commit author.
+Note: the script uses the `gh` command-line tool, so `GH_TOKEN` must be set in the environment.
 """
+
+from __future__ import annotations
+
 import argparse
-import re
 from pathlib import Path
+import re
 from subprocess import check_call
 from subprocess import check_output
 from subprocess import run
 
 from colorama import Fore
 from colorama import init
-from github3.repos import Repository
 
 
 class InvalidFeatureRelease(Exception):
@@ -31,24 +33,26 @@ class InvalidFeatureRelease(Exception):
 SLUG = "pytest-dev/pytest"
 
 PR_BODY = """\
-Created automatically from manual trigger.
+Created by the [prepare release pr]\
+(https://github.com/pytest-dev/pytest/actions/workflows/prepare-release-pr.yml) workflow.
 
-Once all builds pass and it has been **approved** by one or more maintainers, the build
-can be released by pushing a tag `{version}` to this repository.
+Once all builds pass and it has been **approved** by one or more maintainers, start the \
+[deploy](https://github.com/pytest-dev/pytest/actions/workflows/deploy.yml) workflow, using these parameters:
+
+* `Use workflow from`: `release-{version}`.
+* `Release version`: `{version}`.
+
+Or execute on the command line:
+
+```console
+gh workflow run deploy.yml -r release-{version} -f version={version}
+```
+
+After the workflow has been approved by a core maintainer, the package will be uploaded to PyPI automatically.
 """
 
 
-def login(token: str) -> Repository:
-    import github3
-
-    github = github3.login(token=token)
-    owner, repo = SLUG.split("/")
-    return github.repository(owner, repo)
-
-
-def prepare_release_pr(
-    base_branch: str, is_major: bool, token: str, prerelease: str
-) -> None:
+def prepare_release_pr(base_branch: str, is_major: bool, prerelease: str) -> None:
     print()
     print(f"Processing release for branch {Fore.CYAN}{base_branch}")
 
@@ -66,7 +70,7 @@ def prepare_release_pr(
         )
     except InvalidFeatureRelease as e:
         print(f"{Fore.RED}{e}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
     print(f"Version: {Fore.CYAN}{version}")
 
@@ -115,22 +119,26 @@ def prepare_release_pr(
         check=True,
     )
 
-    oauth_url = f"https://{token}:x-oauth-basic@github.com/{SLUG}.git"
     run(
-        ["git", "push", oauth_url, f"HEAD:{release_branch}", "--force"],
+        ["git", "push", "origin", f"HEAD:{release_branch}", "--force"],
         check=True,
     )
     print(f"Branch {Fore.CYAN}{release_branch}{Fore.RESET} pushed.")
 
     body = PR_BODY.format(version=version)
-    repo = login(token)
-    pr = repo.create_pull(
-        f"Prepare release {version}",
-        base=base_branch,
-        head=release_branch,
-        body=body,
+    run(
+        [
+            "gh",
+            "pr",
+            "new",
+            f"--base={base_branch}",
+            f"--head={release_branch}",
+            f"--title=Release {version}",
+            f"--body={body}",
+            "--draft",
+        ],
+        check=True,
     )
-    print(f"Pull request {Fore.CYAN}{pr.url}{Fore.RESET} created.")
 
 
 def find_next_version(
@@ -147,7 +155,7 @@ def find_next_version(
     last_version = valid_versions[-1]
 
     if is_major:
-        return f"{last_version[0]+1}.0.0{prerelease}"
+        return f"{last_version[0] + 1}.0.0{prerelease}"
     elif is_feature_release:
         return f"{last_version[0]}.{last_version[1] + 1}.0{prerelease}"
     else:
@@ -158,14 +166,12 @@ def main() -> None:
     init(autoreset=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("base_branch")
-    parser.add_argument("token")
     parser.add_argument("--major", action="store_true", default=False)
     parser.add_argument("--prerelease", default="")
     options = parser.parse_args()
     prepare_release_pr(
         base_branch=options.base_branch,
         is_major=options.major,
-        token=options.token,
         prerelease=options.prerelease,
     )
 

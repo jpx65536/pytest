@@ -1,20 +1,19 @@
-# flake8: noqa
-# disable flake check on this file because some constructs are strange
-# or redundant on purpose and can't be disable on a line-by-line basis
+# mypy: allow-untyped-defs
+from __future__ import annotations
+
 import inspect
 import linecache
+from pathlib import Path
 import sys
 import textwrap
-from pathlib import Path
 from typing import Any
-from typing import Dict
 
-import pytest
 from _pytest._code import Code
 from _pytest._code import Frame
 from _pytest._code import getfslineno
 from _pytest._code import Source
 from _pytest.pathlib import import_path
+import pytest
 
 
 def test_source_str_function() -> None:
@@ -254,7 +253,7 @@ def test_getfuncsource_dynamic() -> None:
     assert str(g_source).strip() == "def g():\n    pass  # pragma: no cover"
 
 
-def test_getfuncsource_with_multine_string() -> None:
+def test_getfuncsource_with_multiline_string() -> None:
     def f():
         c = """while True:
     pass
@@ -294,8 +293,8 @@ def test_source_of_class_at_eof_without_newline(_sys_snapshot, tmp_path: Path) -
     """
     )
     path = tmp_path.joinpath("a.py")
-    path.write_text(str(source))
-    mod: Any = import_path(path, root=tmp_path)
+    path.write_text(str(source), encoding="utf-8")
+    mod: Any = import_path(path, root=tmp_path, consider_namespace_packages=False)
     s2 = Source(mod.A)
     assert str(source).strip() == str(s2).strip()
 
@@ -335,7 +334,7 @@ def test_findsource(monkeypatch) -> None:
     assert src is not None
     assert "if 1:" in str(src)
 
-    d: Dict[str, Any] = {}
+    d: dict[str, Any] = {}
     eval(co, d)
     src, lineno = findsource(d["x"])
     assert src is not None
@@ -369,7 +368,11 @@ def test_getfslineno() -> None:
         pass
 
     B.__name__ = B.__qualname__ = "B2"
-    assert getfslineno(B)[1] == -1
+    # Since Python 3.13 this started working.
+    if sys.version_info >= (3, 13):
+        assert getfslineno(B)[1] != -1
+    else:
+        assert getfslineno(B)[1] == -1
 
 
 def test_code_of_object_instance_with_call() -> None:
@@ -439,14 +442,9 @@ comment 4
 '''
     for line in range(2, 6):
         assert str(getstatement(line, source)) == "    x = 1"
-    if sys.version_info >= (3, 8) or hasattr(sys, "pypy_version_info"):
-        tqs_start = 8
-    else:
-        tqs_start = 10
-        assert str(getstatement(10, source)) == '"""'
-    for line in range(6, tqs_start):
+    for line in range(6, 8):
         assert str(getstatement(line, source)) == "    assert False"
-    for line in range(tqs_start, 10):
+    for line in range(8, 10):
         assert str(getstatement(line, source)) == '"""\ncomment 4\n"""'
 
 
@@ -464,7 +462,6 @@ def test_comment_in_statement() -> None:
 
 def test_source_with_decorator() -> None:
     """Test behavior with Source / Code().source with regard to decorators."""
-    from _pytest.compat import get_real_func
 
     @pytest.mark.foo
     def deco_mark():
@@ -478,14 +475,14 @@ def test_source_with_decorator() -> None:
     def deco_fixture():
         assert False
 
-    src = inspect.getsource(deco_fixture)
+    src = inspect.getsource(deco_fixture._get_wrapped_function())
     assert src == "    @pytest.fixture\n    def deco_fixture():\n        assert False\n"
-    # currently Source does not unwrap decorators, testing the
-    # existing behavior here for explicitness, but perhaps we should revisit/change this
-    # in the future
-    assert str(Source(deco_fixture)).startswith("@functools.wraps(function)")
+    # Make sure the decorator is not a wrapped function
+    assert not str(Source(deco_fixture)).startswith("@functools.wraps(function)")
     assert (
-        textwrap.indent(str(Source(get_real_func(deco_fixture))), "    ") + "\n" == src
+        textwrap.indent(str(Source(deco_fixture._get_wrapped_function())), "    ")
+        + "\n"
+        == src
     )
 
 
